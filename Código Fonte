@@ -1,0 +1,211 @@
+//"Variable_Function_definitions"_____________________________________________________________________________________________________________________________________________________________
+#include <Stdlib.h>
+#include <String.h>
+
+//Entradas e saídas do Bloco C:
+int g_nInputNodes = 0;
+int g_nOutputNodes = 0;
+int g_nStepCount = 0;
+
+#define fa 1/20000.0 //Frequência de amostragem
+#define Ta 1/fa //Período de amostragem
+
+Constantes:
+#define KSQRT3_6 0.28867513459481288225457439025098
+#define W0 376.99111843077518861551720599354
+#define PI 3.1415926535897932384626433832795
+
+float vg[] = {0, 0, 0}; //Tensão da rede (grid). vg[0] = vr...
+float vrs, vts = 0; //Tensão de linha da rede
+
+//Variáveis para o SOGI:
+float v0[] = {0, 0, 0};
+float v90[] = {0, 0, 0};
+float v0_[] = {0, 0, 0};
+float v90_[] = {0, 0, 0};
+
+float vsn[] = {0, 0, 0}; //Tensão de seq- //Tensão obtida pelo SOGI
+float vdn, vqn = 0; //Tensão direta(d)/ quadratura(q) de seq-
+float idp, iqp = 0; //Corrente direta(d)/ quadratura(q) de seq+
+
+//controladores
+float P_dn, P_qn = 0; //Sinal de chegada ao P do controle de seq-
+float PI_dp, PI_qp, PI_dp_, PI_qp_ = 0; //Sinal de chegada ao PI do controle de seq+
+float dn, qn = 0; //Componente direta(d)/ quadratura(q) de saída do controle de seq-
+float dp, qp, dp_, qp_ = 0; //Componente direta(d)/ quadratura(q) de saída do controle de seq+
+float an, bn, cn = 0; //Sinal modulador de seq- do PWM
+float ap, bp, cp = 0; //Sinal modulador de seq+ do PWM
+float aw, aw_ = 0; //Sinal anterior ao da frequência no PLL
+#define iQ 0 //Referencial de corrente de eixo em quadratura -> controle seq+
+
+float int1[] = {0, 0, 0}; //Integrador para v0 do SOGI
+float int1_[] = {0, 0, 0};
+float int2[] = {0, 0, 0}; //Integrador para v90 do SOGI
+float int2_[] = {0, 0, 0};
+
+float vq, vd, vq_, ia, ib, ic = 0.0;
+float th, th_=0.0; //Theta inicial.
+float w, w_ = 60.0; //Frequência inicial.
+int i; //Varíavel para auxiliar no laço for
+float vdc; //Tensão no link CC
+float enn, enp; //enn: Liga controle seq- //enp: Liga controle seq+
+
+//Ganhos dos controladores:
+#define K1_PLL   0.3000
+#define K2_PLL   -0.2995
+#define K1_PISN 0.05 //Ajustar o quanto se deseja compensar
+#define K1_PISP 0.0600
+#define K2_PISP 0.0594
+#define K_SOGI 0.7
+#define q0 0 //Valor inicial da componente de seq+
+#define d0 -0.9 //Valor inicial da componente de seq+
+
+float PI_F, PI_F_, F, F_1, F_2, ipref, ipref_1, ipref_2 = 0.0; //Variáveis do controle de tensão - CT
+#define K1_CT 0.0801
+#define K2_CT -0.0799
+//Valores do filtro do CT
+#define K1_F 8.766198032793359e-5
+#define K2_F 1.753239606558672e-4
+#define K3_F -1.973605922096581
+#define K4_F 0.973956570017892
+
+//"OpenSimUser Fcn"_____________________________________________________________________________________________________________________________________________________________
+ g_nInputNodes = nInputCount;
+ g_nOutputNodes = nOutputCount;
+
+//"RunSimUser Fcn"_____________________________________________________________________________________________________________________________________________________________
+
+//Entradas e saídas do Bloco C:
+g_nStepCount++;
+
+//Renomear as entradas:
+vrs = in[0];
+vts = in[1];
+ia = in[2];
+ib = in[3];
+ic = - ia - ib;
+vdc = in[4];
+enp = in[5];
+enn = in[6];
+
+//Controle de tensão - CT:
+	PI_F = (400-vdc)*enp;
+	
+	//PI:
+		F = K1_CT*PI_F + K2_CT*PI_F_ + F_1;
+		
+	//Filtro
+		ipref = K1_F*(F + F_2) + K2_F*F_1 - K3_F*ipref_1 - K4_F*ipref_2;
+			
+	if(ipref>=0)   //Limite superior de ipref
+		ipref = 0;
+
+//Atualiza Variáveis:
+ipref_2 = ipref_1;
+ipref_1 = ipref;
+F_2 = F_1;
+F_1 = F;
+PI_F_ = PI_F;
+
+out[10] = ipref;
+
+//PLL:
+	//Desconsiderando as componentes de seq0:
+	vd =  -vts*sqrt(3.0f)/3.0f*sin(th) + (2.0f*vrs-vts)/3.0f*cos(th);
+	vq =   vts*sqrt(3.0f)/3.0f*cos(th) + (2.0f*vrs-vts)/3.0f*sin(th);
+
+	//PI
+		aw = K1_PLL*vq + K2_PLL*vq_ + aw_;
+		w = aw+W0;
+
+	th = (w + w_)*Ta/2.0 + th_;
+	if(th > 2*PI)
+	th -= 2*PI;
+
+//Controle seq+:
+	//Transformada de park seq+:
+		idp =  (-ic+ib)*sqrt(3.0f)/3.0f*sin(th) + (2.0f*ia-ib-ic)/3.0f*cos(th);
+		iqp = -(-ic+ib)*sqrt(3.0f)/3.0f*cos(th) + (2.0f*ia-ib-ic)/3.0f*sin(th);	
+
+	//PI:
+		PI_dp = (ipref-idp) *enp;
+		PI_qp = (iQ-iqp)*enp;
+
+		dp = K1_PISP*PI_dp  - K2_PISP*PI_dp_ + dp_;
+		qp = K1_PISP*PI_qp  - K2_PISP*PI_qp_ + qp_;
+
+	if(enp == 0){ //Desativa a injeção de corrente de seq+ quando enp estiver em zero
+		dp = 0;
+		qp = 0;
+	}
+		
+	//Transformada inversa de park seq+:
+	ap = (qp + q0)*sin(th) + (dp + d0)*cos(th);
+	bp = ((-(qp + q0) + sqrt(3.0f)*(dp + d0))*sin(th) - (sqrt(3.0f)*(qp + q0) + (dp + d0))*cos(th))/2.0f;
+	cp = ((-(qp + q0) - sqrt(3.0f)*(dp + d0))*sin(th) + (sqrt(3.0f)*(qp + q0) - (dp + d0))*cos(th))/2.0f;
+
+//Desconsiderando as componentes de seq0:
+vg[0] = -1.0/3.0*vts + 2.0/3.0*vrs;
+vg[1] = -1.0/3.0*vts - 1.0/3.0*vrs;
+vg[2] =  2.0/3.0*vts - 1.0/3.0*vrs;
+
+//SOGI
+for(i=0; i<3; i++){
+
+	int1[i] = ((vg[i] - v0_[i])*K_SOGI - v90_[i])* w;
+	v0[i] = (int1[i] + int1_[i])*Ta/2.0 + v0_[i];
+	int2[i] = v0[i]*w;
+	v90[i] = (int2[i] + int2_[i])*Ta/2.0 + v90_[i];
+
+	//Atualiza variáveis:
+	int1_[i] = int1[i];
+	int2_[i] = int2[i];
+	v0_[i] = v0[i];
+	v90_[i] = v90[i];
+}
+	//Componente de seq- da tensão:
+		vsn[0] = -(v90[2]-v90[1])*KSQRT3_6 + (v0[0] - 0.5*v0[1] - 0.5*v0[2])*1.0/3.0;
+		vsn[1] = -(v90[0]-v90[2])*KSQRT3_6 + (v0[1] - 0.5*v0[0] - 0.5*v0[2])*1.0/3.0;
+		vsn[2] = -(v90[1]-v90[0])*KSQRT3_6 + (v0[2] - 0.5*v0[1] - 0.5*v0[0])*1.0/3.0;
+		
+//Controle seq-:
+	//Transformada de park seq-:
+		vdn =  (-vsn[2]+vsn[1])*sqrt(3.0)/3.0*sin(-th) + (2.0*vsn[0]-vsn[1]-vsn[2])/3.0*cos(-th);
+		vqn = -(-vsn[2]+vsn[1])*sqrt(3.0)/3.0*cos(-th) + (2.0*vsn[0]-vsn[1]-vsn[2])/3.0*sin(-th);
+
+	//P
+		P_dn = -vdn *enn;
+		P_qn = -vqn *enn;
+
+		dn = K1_PISN*P_dn;
+		qn = K1_PISN*P_qn;
+
+	if(enn == 0){ //Desativa a injeção de corrente de seq- quando enn estiver em zero
+		dn = 0;
+		qn = 0;
+	}
+	
+	//Transformada inversa de park seq-:
+		an =  qn * sin(-th) +  dn * cos(-th);
+		bn = ((- qn + sqrt(3.0)* dn) * sin(-th) - (sqrt(3.0)* qn +  dn) * cos(-th))/2.0;
+		cn = ((- qn - sqrt(3.0)* dn) * sin(-th) + (sqrt(3.0)* qn -  dn) * cos(-th))/2.0;
+
+//Atualiza variáveis:
+//Todas as varíaveis que tem a sua correspondente no intante anterior deverá ser atualizada
+	w_ = w; //Frequência
+	th_ = th; //Theta
+	vq_ = vq; //Tensão da rede em quadratura
+	aw_ = aw; //Sinal anterior ao da frequência no PLL
+	dp_ = dp; //Componente quadratura(q) de saída do controle de seq+
+	qp_ = qp; //Componente direta(d) de saída do controle de seq+
+	PI_dp_ = PI_dp; //Sinal de chegada ao PI do controle de seq+
+	PI_qp_ = PI_qp; //Sinal de chegada ao PI do controle de seq+
+	vq_ = vq; //Tensão da rede em quadratura
+	aw_ = aw; //Sinal anterior ao da frequência no PLL
+
+//Dados de saída:
+	out[0] =w;
+	out[1] = th;
+	out[2] = an+ap; //Somatório do sinal modulador de seq- com o de seq+ do PWM
+	out[3] = bn+bp; //Somatório do sinal modulador de seq- com o de seq+ do PWM
+	out[4] = cn+cp; //Somatório do sinal modulador de seq- com o de seq+ do PWM
